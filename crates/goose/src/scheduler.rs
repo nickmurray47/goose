@@ -3,6 +3,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -1160,6 +1161,36 @@ async fn run_scheduled_job_internal(
         });
     }
     tracing::info!("Agent configured with provider for job '{}'", job.id);
+
+    // Health check: verify provider can execute before running job
+    tracing::info!("Running provider health check for job '{}'", job.id);
+    let health_check_result = tokio::time::timeout(
+        Duration::from_secs(30),
+        agent.reply(
+            Conversation::new_unvalidated(vec![Message::user().with_text("ping")]),
+            None,
+            None,
+        )
+    ).await;
+
+    match health_check_result {
+        Ok(Ok(_)) => {
+            tracing::info!("Provider health check passed for job '{}'", job.id);
+        }
+        Ok(Err(e)) => {
+            return Err(JobExecutionError {
+                job_id: job.id.clone(),
+                error: format!("Provider health check failed: {}", e),
+            });
+        }
+        Err(_) => {
+            return Err(JobExecutionError {
+                job_id: job.id.clone(),
+                error: "Provider health check timed out after 30 seconds - provider may not be properly configured".to_string(),
+            });
+        }
+    }
+
     let execution_mode = job.execution_mode.as_deref().unwrap_or("background");
     tracing::info!("Job '{}' running in {} mode", job.id, execution_mode);
 
@@ -1216,43 +1247,57 @@ async fn run_scheduled_job_internal(
         retry_config: None,
     };
 
-    match agent
-        .reply(conversation.clone(), Some(session_config.clone()), None)
-        .await
-    {
-        Ok(mut stream) => {
-            use futures::StreamExt;
+    // Execute job with timeout to prevent infinite hangs
+    let job_timeout_seconds = 600; // 10 minutes
+    tracing::info!("Starting job '{}' execution with {} second timeout", job.id, job_timeout_seconds);
 
-            while let Some(message_result) = stream.next().await {
-                tokio::task::yield_now().await;
+    let reply_future = agent.reply(conversation.clone(), Some(session_config.clone()), None);
 
-                match message_result {
-                    Ok(AgentEvent::Message(msg)) => {
-                        if msg.role == rmcp::model::Role::Assistant {
-                            tracing::info!("[Job {}] Assistant: {:?}", job.id, msg.content);
+    match tokio::time::timeout(Duration::from_secs(job_timeout_seconds), reply_future).await {
+        Ok(reply_result) => match reply_result {
+            Ok(mut stream) => {
+                use futures::StreamExt;
+
+                while let Some(message_result) = stream.next().await {
+                    tokio::task::yield_now().await;
+
+                    match message_result {
+                        Ok(AgentEvent::Message(msg)) => {
+                            if msg.role == rmcp::model::Role::Assistant {
+                                tracing::info!("[Job {}] Assistant: {:?}", job.id, msg.content);
+                            }
+                            conversation.push(msg);
                         }
-                        conversation.push(msg);
-                    }
-                    Ok(AgentEvent::McpNotification(_)) => {}
-                    Ok(AgentEvent::ModelChange { .. }) => {}
-                    Ok(AgentEvent::HistoryReplaced(updated_conversation)) => {
-                        conversation = updated_conversation;
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "[Job {}] Error receiving message from agent: {}",
-                            job.id,
-                            e
-                        );
-                        break;
+                        Ok(AgentEvent::McpNotification(_)) => {}
+                        Ok(AgentEvent::ModelChange { .. }) => {}
+                        Ok(AgentEvent::HistoryReplaced(updated_conversation)) => {
+                            conversation = updated_conversation;
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "[Job {}] Error receiving message from agent: {}",
+                                job.id,
+                                e
+                            );
+                            break;
+                        }
                     }
                 }
             }
-        }
-        Err(e) => {
+            Err(e) => {
+                return Err(JobExecutionError {
+                    job_id: job.id.clone(),
+                    error: format!("Agent failed to reply for recipe '{}': {}", job.source, e),
+                });
+            }
+        },
+        Err(_) => {
             return Err(JobExecutionError {
                 job_id: job.id.clone(),
-                error: format!("Agent failed to reply for recipe '{}': {}", job.source, e),
+                error: format!(
+                    "Job execution timed out after {} seconds. This may indicate the provider is hanging or unresponsive.",
+                    job_timeout_seconds
+                ),
             });
         }
     }
