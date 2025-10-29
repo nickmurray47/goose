@@ -4,6 +4,11 @@ export type ClientOptions = {
     baseUrl: `${string}://${string}` | (string & {});
 };
 
+export type AddExtensionRequest = {
+    config: ExtensionConfig;
+    session_id: string;
+};
+
 export type Annotations = {
     audience?: Array<Role>;
     lastModified?: string;
@@ -360,6 +365,32 @@ export type MessageContent = (TextContent & {
     type: 'systemNotification';
 });
 
+export type MessageEvent = {
+    message: Message;
+    type: 'Message';
+} | {
+    error: string;
+    type: 'Error';
+} | {
+    reason: string;
+    type: 'Finish';
+} | {
+    mode: string;
+    model: string;
+    type: 'ModelChange';
+} | {
+    message: {
+        [key: string]: unknown;
+    };
+    request_id: string;
+    type: 'Notification';
+} | {
+    conversation: Conversation;
+    type: 'UpdateConversation';
+} | {
+    type: 'Ping';
+};
+
 /**
  * Metadata for message visibility
  */
@@ -550,6 +581,11 @@ export type RecipeParameterRequirement = 'required' | 'optional' | 'user_prompt'
 
 export type RedactedThinkingContent = {
     data: string;
+};
+
+export type RemoveExtensionRequest = {
+    name: string;
+    session_id: string;
 };
 
 export type ResourceContents = {
@@ -869,6 +905,68 @@ export type UpsertConfigQuery = {
 export type UpsertPermissionsQuery = {
     tool_permissions: Array<ToolPermission>;
 };
+
+export type AgentAddExtensionData = {
+    body: AddExtensionRequest;
+    path?: never;
+    query?: never;
+    url: '/agent/add_extension';
+};
+
+export type AgentAddExtensionErrors = {
+    /**
+     * Unauthorized - invalid secret key
+     */
+    401: unknown;
+    /**
+     * Agent not initialized
+     */
+    424: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type AgentAddExtensionResponses = {
+    /**
+     * Extension added
+     */
+    200: string;
+};
+
+export type AgentAddExtensionResponse = AgentAddExtensionResponses[keyof AgentAddExtensionResponses];
+
+export type AgentRemoveExtensionData = {
+    body: RemoveExtensionRequest;
+    path?: never;
+    query?: never;
+    url: '/agent/remove_extension';
+};
+
+export type AgentRemoveExtensionErrors = {
+    /**
+     * Unauthorized - invalid secret key
+     */
+    401: unknown;
+    /**
+     * Agent not initialized
+     */
+    424: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type AgentRemoveExtensionResponses = {
+    /**
+     * Extension removed
+     */
+    200: string;
+};
+
+export type AgentRemoveExtensionResponse = AgentRemoveExtensionResponses[keyof AgentRemoveExtensionResponses];
 
 export type ResumeAgentData = {
     body: ResumeAgentRequest;
@@ -1825,8 +1923,10 @@ export type ReplyResponses = {
     /**
      * Streaming response initiated
      */
-    200: unknown;
+    200: MessageEvent;
 };
+
+export type ReplyResponse = ReplyResponses[keyof ReplyResponses];
 
 export type CreateScheduleData = {
     body: CreateScheduleRequest;
